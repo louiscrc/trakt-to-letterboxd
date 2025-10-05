@@ -12,7 +12,7 @@ Automatically sync your Trakt movies to Letterboxd:
 
 ### 1. Configuration
 
-Create a `config.yml` file at the root:
+Duplicate `config.template.yml` to `config.yml` at the root:
 
 ```yaml
 accounts:
@@ -20,14 +20,17 @@ accounts:
     letterboxd_password: your_password
     trakt_client_id: your_client_id
     trakt_client_secret: your_client_secret
-    internal: null
+    internal: # internal will be filled automatically
+      trakt_oauth:
+        token: 
+        refresh: 
+        expires_at: 
 ```
 
 To get `trakt_client_id` and `trakt_client_secret`:
 - Go to https://trakt.tv/oauth/applications/new
 - Name: `letterboxd-trakt-sync`
 - Redirect URI: `urn:ietf:wg:oauth:2.0:oob`
-- Permissions: `/scrobble`
 
 ### 2. First Run
 
