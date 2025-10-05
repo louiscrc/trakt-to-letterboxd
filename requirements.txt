@@ -1,0 +1,9 @@
+# This file was manually generated.
+pandas
+pytrakt
+rich
+pyyaml
+cronsim
+pydantic
+selenium
+webdriver-manager

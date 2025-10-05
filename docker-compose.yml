@@ -1,0 +1,20 @@
+services:
+  trakt-to-letterboxd:
+    container_name: trakt-to-letterboxd
+    image: louiscrc/trakt-to-letterboxd:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - RUN_ON_START=true
+      - TZ=Europe/Paris
+      - IN_DOCKER=true
+      - SCHEDULED=true
+      - CRON_SCHEDULE=0 * * * * 
+      - AUTO_IMPORT=true    
+      - HEADLESS_IMPORT=true
+    volumes:
+      - ./config.yml:/app/config/config.yml        
+      - ./csv:/csv             
+    shm_size: 2gb              
+    restart: unless-stopped

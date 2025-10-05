@@ -1,0 +1,12 @@
+accounts:
+  - letterboxd_username: xxx
+    letterboxd_password: xxx
+    trakt_client_id: xxx
+    trakt_client_secret: xxx
+    internal:
+      trakt_oauth:
+        token:
+        refresh:
+        expires_at:
+
+# internal will be filled automatically
