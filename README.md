@@ -53,3 +53,8 @@ Requires Google Chrome installed locally.
 | `csv/watched.csv` | Trakt watch history |
 
 Format: `Title,Year,Rating10,Rewatch,imdbID,WatchedDate`
+
+## Comment about full-auto mode
+
+Fully automated mode isn't possible, despite using the exact same chrome_profile, starting the browser headless mode systematically re-triggers the Cloudflare challenge.
+But in headfull mode, you only need to complete the Cloudflare challenge and manual "log-in" click once on a while, the rest of the time the process is 100% automated even if the browser is opened.
