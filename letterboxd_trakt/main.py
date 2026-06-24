@@ -1,90 +1,62 @@
-import os
-import time
 from datetime import datetime
+from pathlib import Path
 
-from cronsim import CronSim
 from trakt.errors import TraktUnavailable
 
 from . import console
 from .config import load_config
 from .export import export_all_trakt_data
-from .import_letterboxd import import_to_letterboxd
+from .import_letterboxd import upload_to_letterboxd
+from .log import configure_logging
 from .trakt import trakt_init
 
 
-def run():
-    """Export Trakt data to CSV for Letterboxd import"""
+def sync_from_trakt(
+    *,
+    config_path: str | Path = "config.yml",
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> None:
+    """Pull new watches from Trakt into export.csv."""
+    configure_logging(verbose=verbose)
+    title = "Trakt download (dry run)" if dry_run else "Trakt download"
+    console.print(title, style="bold magenta")
+    path = Path(config_path)
+    config = load_config(path)
+    if not config:
+        console.print("Config failed to load", style="red")
+        return
+
+    if not config.trakt_client_id or not config.letterboxd_username:
+        console.print("Config not properly configured", style="red")
+        return
+
+    if not trakt_init(config):
+        console.print("Failed to log in to Trakt", style="red")
+        return
+
     try:
-        config = load_config()
-        if not config:
-            console.print("Config failed to load", style="dark_red")
-            return
-
-        if not config.trakt_client_id or not config.letterboxd_username:
-            console.print("Config not properly configured", style="dark_red")
-            return
-
-        auto_import = os.getenv("AUTO_IMPORT", "false").lower() == "true"
-
-        if not trakt_init(config):
-            console.print("Failed to log in to Trakt account", style="dark_red")
-            return
-
-        data_to_import = export_all_trakt_data(config)
-
-        # Auto-import to Letterboxd if enabled
-        if auto_import and data_to_import:
-            console.print("\nAuto-import is enabled, starting Letterboxd import...", style="cyan")
-            headless = os.getenv("HEADLESS_IMPORT", "true").lower() == "true"
-            import_to_letterboxd(config, headless=headless)
-
-        config.internal.last_successful_run = datetime.now()
-        config.save()
-        
-        console.print(
-            f"Export completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            style="green",
-        )
+        export_all_trakt_data(dry_run=dry_run)
+        if not dry_run:
+            config.internal.last_successful_run = datetime.now()
+            config.save(path)
     except TraktUnavailable:
-        console.print("Failed to export - Trakt unavailable", style="dark_red")
+        console.print("Trakt unavailable", style="red")
     except Exception:
-        console.print("Failed to export - Unknown error", style="dark_red")
+        console.print("Trakt download failed", style="red")
         console.print_exception()
 
 
-def get_next_run_time(cron_schedule):
-    now = datetime.now()
-    cron_iterator = CronSim(cron_schedule, now)
-    return next(cron_iterator)
-
-
-def scheduler():
-    cron_schedule = os.getenv("CRON_SCHEDULE", "0 * * * *")  # Default to hourly
-
-    while True:
-        next_run = get_next_run_time(cron_schedule)
-        console.print(f"Next scheduled run: {next_run}", style="cyan")
-
-        # sleep until next run time
-        sleep_duration = max((next_run - datetime.now()).total_seconds(), 1)
-        time.sleep(sleep_duration)
-
-        run()
-
-
-def main():
-    scheduled = os.getenv("SCHEDULED", "false").lower() == "true"
-
-    if scheduled:
-        run_on_start = os.getenv("RUN_ON_START", "false").lower() == "true"
-
-        if run_on_start:
-            run()
-
-        scheduler()
-    else:
-        run()
-
-
-if __name__ == "__main__":
-    main()
+def upload_to_letterboxd_cli(
+    *,
+    config_path: str | Path = "config.yml",
+    diary: bool = True,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> None:
+    path = Path(config_path)
+    config = load_config(path)
+    if not config:
+        console.print("Config failed to load", style="red")
+        return
+    upload_to_letterboxd(config, diary=diary, dry_run=dry_run, verbose=verbose)

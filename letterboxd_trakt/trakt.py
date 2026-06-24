@@ -10,11 +10,10 @@ core.AUTH_METHOD = core.DEVICE_AUTH
 
 
 def create_trakt_config(config, with_tokens: bool = True):
-    """Create a fresh trakt config object."""
     trakt_cfg = config_factory()
     trakt_cfg.CLIENT_ID = config.trakt_client_id
     trakt_cfg.CLIENT_SECRET = config.trakt_client_secret
-    
+
     if with_tokens:
         trakt_cfg.OAUTH_TOKEN = config.internal.trakt_oauth.token
         trakt_cfg.OAUTH_REFRESH = config.internal.trakt_oauth.refresh
@@ -23,13 +22,11 @@ def create_trakt_config(config, with_tokens: bool = True):
         trakt_cfg.OAUTH_TOKEN = None
         trakt_cfg.OAUTH_REFRESH = None
         trakt_cfg.OAUTH_EXPIRES_AT = None
-    
+
     return trakt_cfg
 
 
 def clear_invalid_tokens(config):
-    """Clear invalid tokens from config and save."""
-    console.print("Clearing invalid OAuth tokens from config...", style="yellow")
     config.internal.trakt_oauth.token = None
     config.internal.trakt_oauth.refresh = None
     config.internal.trakt_oauth.expires_at = None
@@ -37,7 +34,6 @@ def clear_invalid_tokens(config):
 
 
 def save_tokens(config, trakt_cfg):
-    """Save OAuth tokens from trakt_cfg to config and persist to file."""
     config.internal.trakt_oauth.token = trakt_cfg.OAUTH_TOKEN
     config.internal.trakt_oauth.refresh = trakt_cfg.OAUTH_REFRESH
     config.internal.trakt_oauth.expires_at = trakt_cfg.OAUTH_EXPIRES_AT
@@ -45,9 +41,6 @@ def save_tokens(config, trakt_cfg):
 
 
 def validate_existing_tokens(config, trakt_cfg) -> bool:
-    """Try to validate and refresh existing OAuth tokens."""
-    console.print("Validating existing OAuth tokens...", style="blue")
-    
     try:
         client = core.api()
         auth: TokenAuth = client.auth
@@ -55,69 +48,43 @@ def validate_existing_tokens(config, trakt_cfg) -> bool:
         _, token = auth.get_token()
 
         if not token:
-            console.print("Token validation returned None.", style="yellow")
             return False
 
-        # Update config with potentially refreshed tokens
         save_tokens(config, trakt_cfg)
-        
-        # Test the token with a real API call
-        # get_token() may return the old token even if refresh failed
-        console.print("Testing token with API call...", style="blue")
-        test_response = client.get('users/me')
-        
-        if test_response:
-            console.print("OAuth tokens validated successfully!", style="green")
+        if client.get("users/me"):
             return True
-        
-        console.print("API test returned empty response.", style="yellow")
         return False
-        
-    except Exception as e:
-        console.print(f"Token validation failed: {e}", style="yellow")
+
+    except Exception:
         return False
 
 
 def run_device_auth(config) -> bool:
-    """Run device authentication flow.
-    
-    Displays a code for the user to enter at https://trakt.tv/activate.
-    The library handles polling internally until user validates or timeout.
-    """
     trakt_cfg = create_trakt_config(config, with_tokens=False)
-    
+
     console.print(
-        "\n[bold cyan]Trakt Device Authentication[/bold cyan]\n"
-        "Visit [link=https://trakt.tv/activate]https://trakt.tv/activate[/link] "
-        "and enter the code shown below.\n",
+        "\n[bold cyan]Trakt device auth[/bold cyan] — enter the code at "
+        "[link=https://trakt.tv/activate]trakt.tv/activate[/link]\n",
         style="cyan",
     )
-    
+
     try:
         device_auth(config=trakt_cfg)
         save_tokens(config, trakt_cfg)
-        console.print("Signed in to Trakt successfully!", style="bold green")
+        console.print("Signed in to Trakt.", style="green")
         return True
     except Exception as e:
-        console.print(f"Authentication failed: {e}", style="bold red")
+        console.print(f"Trakt auth failed: {e}", style="red")
         return False
 
 
 def trakt_init(config) -> bool:
-    """Initialize Trakt authentication.
-    
-    Attempts to use existing tokens, refreshing if needed.
-    Falls back to device authentication if tokens are invalid.
-    """
     has_existing_tokens = config.internal.trakt_oauth.token is not None
 
     if has_existing_tokens:
         trakt_cfg = create_trakt_config(config, with_tokens=True)
-        
         if validate_existing_tokens(config, trakt_cfg):
             return True
-        
         clear_invalid_tokens(config)
-        console.print("Tokens invalid. Starting device authentication...", style="yellow")
 
     return run_device_auth(config)

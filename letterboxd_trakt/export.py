@@ -6,7 +6,7 @@ from trakt import core
 from trakt.users import User
 
 from . import console
-from .config import Config
+from .log import log_nav
 
 
 def convert_trakt_datetime_str(rated_at: str) -> datetime.datetime:
@@ -16,15 +16,13 @@ def convert_trakt_datetime_str(rated_at: str) -> datetime.datetime:
 
 def get_output_path(filename: str) -> Path:
     """Get output path for CSV files"""
-    output_dir = Path("/csv") if Path("/csv").exists() else Path("./csv")
+    output_dir = Path("./csv")
     output_dir.mkdir(exist_ok=True)
     return output_dir / filename
 
 
 def get_all_ratings() -> pd.DataFrame:
-    """Fetch all ratings from Trakt"""
-    console.print("Fetching all Trakt ratings...", style="blue")
-    
+    """Fetch all ratings from Trakt."""
     trakt_user = User("me")
     ratings = trakt_user.get_ratings('movies')
     ratings_data = []
@@ -50,15 +48,12 @@ def get_all_ratings() -> pd.DataFrame:
         })
 
     df = pd.DataFrame(ratings_data)
-    console.print(f"Retrieved {len(df)} ratings", style="green")
     return df
 
 
 def get_all_watched() -> pd.DataFrame:
-    """Fetch all watched movies from Trakt with watch history dates"""
-    console.print("Fetching all Trakt watched movies history...", style="blue")
-    
-    try: 
+    """Fetch all watched movies from Trakt with watch history dates."""
+    try:
         # Direct call to Trakt API to fetch history with dates
         # The /users/me/history/movies endpoint returns full history with watched_at
         api = core.api()
@@ -72,9 +67,8 @@ def get_all_watched() -> pd.DataFrame:
             page += 1
         
         if not history_data:
-            console.print("No watch history found", style="yellow")
             return pd.DataFrame(columns=['Title', 'Year', 'imdbID', 'WatchedDate'])
-        
+
     except Exception as e:
         console.print(f"Failed to fetch watch history: {e}", style="red")
         raise
@@ -88,15 +82,11 @@ def get_all_watched() -> pd.DataFrame:
     } for entry in history_data]
     
     df = pd.DataFrame(watched_data)
-    console.print(f"Retrieved {len(df)} watched movies", style="green")
     return df
 
 
 def merge_ratings_and_watched(ratings_df: pd.DataFrame, watches_df: pd.DataFrame) -> pd.DataFrame:
-    """Merge ratings and watched data by matching each watch with the closest rating"""
-    console.print("Merging ratings and watched data...", style="blue")
-    
-    # List to store results
+    """Merge ratings and watched data by matching each watch with the closest rating."""
     merged_rows = []
     
     # Group watches and ratings by imdbID
@@ -164,19 +154,24 @@ def merge_ratings_and_watched(ratings_df: pd.DataFrame, watches_df: pd.DataFrame
     
     # Sort by watch date (most recent first)
     final_df = final_df.sort_values('WatchedDate', ascending=False, na_position='last')
-    
-    console.print(f"Merged {len(final_df)} entries", style="green")
     return final_df
 
 
+def _entry_key(df: pd.DataFrame) -> pd.Series:
+    return (
+        df["imdbID"].astype(str)
+        + "_"
+        + df["WatchedDate"].astype(str)
+        + "_"
+        + df["Rating10"].fillna("").astype(str)
+    )
+
+
 def compare_and_get_new_entries(new_merged_df: pd.DataFrame) -> pd.DataFrame:
-    """Compare le nouveau merged avec l'ancien et retourne uniquement les nouvelles entrées"""
-    console.print("Comparing with previous merged data...", style="blue")
-    
+    """Return entries in new_merged_df that are not in the previous merged.csv."""
     old_merged_path = get_output_path("merged.csv")
-    
+
     if not old_merged_path.exists():
-        console.print("No previous merged.csv found, all entries are new", style="yellow")
         return new_merged_df
     
     try:
@@ -187,80 +182,72 @@ def compare_and_get_new_entries(new_merged_df: pd.DataFrame) -> pd.DataFrame:
             old_merged_df = old_merged_df.drop('_key', axis=1)
         
         # Create unique key for each entry (imdbID + WatchedDate + Rating10)
-        # Use fillna('') to handle empty ratings consistently
-        new_merged_df['_key'] = (
-            new_merged_df['imdbID'].astype(str) + '_' + 
-            new_merged_df['WatchedDate'].astype(str) + '_' + 
-            new_merged_df['Rating10'].fillna('').astype(str)
-        )
+        new_merged_df["_key"] = _entry_key(new_merged_df)
 
-        old_merged_df['_key'] = (
-            old_merged_df['imdbID'].astype(str) + '_' + 
-            old_merged_df['WatchedDate'].astype(str) + '_' + 
-            old_merged_df['Rating10'].fillna('').astype(str)
-        )
+        old_merged_df["_key"] = _entry_key(old_merged_df)
         
         # Find new entries
         new_keys = set(new_merged_df['_key']) - set(old_merged_df['_key'])
         new_entries_df = new_merged_df[new_merged_df['_key'].isin(new_keys)].copy()
-        
-        console.print(f"Found {len(new_entries_df)} new entries", style="green")
         return new_entries_df.drop('_key', axis=1)
-        
+
     except Exception as e:
-        console.print(f"Error reading previous merged.csv: {e}", style="yellow")
-        return new_merged_df.drop('_key', axis=1)
+        console.print(f"Could not read merged.csv: {e}", style="yellow")
+        return new_merged_df.drop('_key', axis=1) if '_key' in new_merged_df.columns else new_merged_df
 
 
-def export_all_trakt_data(config: Config) -> bool:
-    """Export all CSV files: ratings, watched, merged, export
-    Return True if export.csv is not empty, False otherwise"""
-    console.print(f"Starting export for Trakt account: {config.letterboxd_username}", style="purple4")
-    
-    exported_files = {}
-    
-    try:
-        # 1. Fetch all ratings
-        ratings_df = get_all_ratings()
-        
-        # 2. Fetch all watched movies
-        watches_df = get_all_watched()
-        
-        # 3. Merge the data
-        merged_df = merge_ratings_and_watched(ratings_df, watches_df)
-        
-        # 4. Compare and get new entries
-        export_df = compare_and_get_new_entries(merged_df)
-        
-        # 5. Export all CSV files
-        
-        # Export ratings.csv
-        ratings_file = get_output_path("ratings.csv")
-        ratings_df.to_csv(ratings_file, index=False, encoding='utf-8')
-        
-        # Export watched.csv
-        watched_file = get_output_path("watched.csv")
-        watches_df.to_csv(watched_file, index=False, encoding='utf-8')
-        
-        # Export merged.csv
-        merged_file = get_output_path("merged.csv")
-        merged_df.to_csv(merged_file, index=False, encoding='utf-8')
-        
-        # Export export.csv (new entries only)
-        export_file = get_output_path("export.csv")
-        export_df.to_csv(export_file, index=False, encoding='utf-8')
-        
-        console.print("Export completed successfully!", style="purple4")
-        
-        # Display summary
-        console.print("Files exported:", style="green")
-        console.print(f"  ratings.csv: {ratings_file}", style="green")
-        console.print(f"  watched.csv: {watched_file}", style="green")
-        console.print(f"  merged.csv: {merged_file}", style="green")
-        console.print(f"  export.csv: {export_file}", style="green")
-        
-    except Exception as e:
-        console.print(f"Export failed: {e}", style="red")
-        raise
-    
-    return len(export_df) > 0
+def append_to_export_csv(new_entries_df: pd.DataFrame, *, dry_run: bool = False) -> tuple[pd.DataFrame, int]:
+    """Add new entries to export.csv without removing existing pending rows."""
+    export_file = get_output_path("export.csv")
+
+    if new_entries_df.empty:
+        if export_file.exists():
+            return pd.read_csv(export_file, dtype={"Rating10": str}), 0
+        return new_entries_df, 0
+
+    if export_file.exists():
+        try:
+            existing_df = pd.read_csv(export_file, dtype={"Rating10": str})
+        except Exception as e:
+            console.print(f"Could not read existing export.csv: {e}", style="yellow")
+            existing_df = pd.DataFrame()
+    else:
+        existing_df = pd.DataFrame()
+
+    if existing_df.empty:
+        combined_df = new_entries_df.copy()
+        added = len(new_entries_df)
+    else:
+        combined_df = pd.concat([existing_df, new_entries_df], ignore_index=True)
+        combined_df["_key"] = _entry_key(combined_df)
+        combined_df = combined_df.drop_duplicates(subset=["_key"], keep="first")
+        combined_df = combined_df.drop("_key", axis=1)
+        added = len(combined_df) - len(existing_df)
+
+    if not dry_run:
+        combined_df.to_csv(export_file, index=False, encoding="utf-8")
+    return combined_df, added
+
+
+def export_all_trakt_data(*, dry_run: bool = False) -> None:
+    if dry_run:
+        console.print("  Dry run — no CSV files will be written.", style="yellow")
+
+    log_nav("Fetching ratings and watch history…")
+
+    ratings_df = get_all_ratings()
+    watches_df = get_all_watched()
+    merged_df = merge_ratings_and_watched(ratings_df, watches_df)
+    new_entries_df = compare_and_get_new_entries(merged_df)
+
+    if not dry_run:
+        ratings_df.to_csv(get_output_path("ratings.csv"), index=False, encoding="utf-8")
+        watches_df.to_csv(get_output_path("watched.csv"), index=False, encoding="utf-8")
+        merged_df.to_csv(get_output_path("merged.csv"), index=False, encoding="utf-8")
+
+    export_df, added = append_to_export_csv(new_entries_df, dry_run=dry_run)
+    suffix = " (dry run)" if dry_run else ""
+    console.print(
+        f"  Done{suffix} — {len(merged_df)} watches, {added} new in export.csv ({len(export_df)} pending)",
+        style="green",
+    )

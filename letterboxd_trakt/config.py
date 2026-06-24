@@ -1,4 +1,3 @@
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -7,9 +6,7 @@ from pydantic import BaseModel
 
 from . import console
 
-CFG_PATH = (
-    Path("/app/config/config.yml") if os.getenv("IN_DOCKER", False) else Path("config.yml")
-)
+CFG_PATH = Path("config.yml")
 CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -69,9 +66,10 @@ class Config(BaseModel):
             return Config(**yaml_data)
 
 
-def load_config() -> Config | None:
+def load_config(path: Path | str | None = None) -> Config | None:
+    cfg_path = Path(path) if path else CFG_PATH
     try:
-        config = Config.load()
+        config = Config.load(cfg_path)
         if not config:
             return None
         return config

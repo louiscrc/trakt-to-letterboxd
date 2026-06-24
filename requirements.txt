@@ -3,7 +3,6 @@ pandas
 pytrakt
 rich
 pyyaml
-cronsim
 pydantic
 selenium
 webdriver-manager
