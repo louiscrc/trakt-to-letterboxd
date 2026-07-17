@@ -569,7 +569,7 @@ def upload_to_letterboxd(
     configure_logging(verbose=verbose)
     row_count = count_export_rows()
     if row_count == 0:
-        console.print("export.csv is empty — run `python ttl -t` first.", style="yellow")
+        console.print("export.csv is empty — run `python ttl.py -t` first.", style="yellow")
         return True
 
     title = "Letterboxd upload (dry run)" if dry_run else "Letterboxd upload"

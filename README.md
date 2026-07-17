@@ -25,7 +25,7 @@ On first Trakt sync you'll authenticate via device code.
 ## Usage
 
 ```bash
-python ttl ...            
+python ttl.py ...
 -t, --trakt               # pull new watches from Trakt into csv/export.csv (accumulates)
 -l, --letterboxd          # upload csv/export.csv to Letterboxd, then clear it
 --no-diary                # skip diary entries on Letterboxd import (only with -l/--letterboxd)
@@ -35,7 +35,7 @@ python ttl ...
 
 ### Letterboxd upload flow
 
-`python ttl -l` opens Chrome and:
+`python ttl.py -l` opens Chrome and:
 
 1. Navigates to **letterboxd.com** — if displayed, *you need to complete Cloudflare Turnstile in the browser*
 2. If not logged-in, opens **sign-in** with credentials pre-filled, *you need to click Sign-In in the browser*
@@ -58,3 +58,7 @@ Format: `Title,Year,Rating10,Rewatch,imdbID,WatchedDate`
 
 Fully automated mode isn't possible, despite using the exact same chrome_profile, starting the browser headless mode systematically re-triggers the Cloudflare challenge.
 But in headfull mode, you only need to complete the Cloudflare challenge and manual "log-in" click once on a while, the rest of the time the process is 100% automated even if the browser is opened.
+
+## License
+
+MIT © Louis Cresci. See [LICENSE](LICENSE).
