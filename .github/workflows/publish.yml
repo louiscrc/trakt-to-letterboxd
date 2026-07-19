@@ -1,0 +1,59 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: pip install .
+
+      - name: Smoke test CLI
+        run: |
+          ttl --help
+          ttl --version
+          ttl init --non-interactive --config /tmp/config.yml
+          test -f /tmp/config.yml
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag matches pyproject version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+          echo "tag=$tag version=$version"
+          test "$tag" = "$version"
+
+      - name: Build
+        run: |
+          pip install build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
