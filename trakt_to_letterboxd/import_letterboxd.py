@@ -1,10 +1,9 @@
 import contextlib
 import os
+import random
 import re
-import shutil
 import time
 from pathlib import Path
-from typing import Literal
 
 from selenium import webdriver
 from selenium.webdriver.common.action_chains import ActionChains
@@ -17,11 +16,23 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 
 from . import console
 from .config import Config
-from .log import configure_logging, log_heading, log_nav
+from .log import (
+    configure_logging,
+    ensure_letterboxd_window,
+    log_err,
+    log_heading,
+    log_info,
+    log_nav,
+    log_ok,
+    log_prompt,
+    reset_browser_logs,
+    set_browser_notify_driver,
+)
+from .paths import chrome_profile_dir, csv_path
 
 
 def get_csv_path(filename: str) -> Path:
-    return Path("./csv") / filename
+    return csv_path(filename)
 
 
 EXPORT_CSV_HEADER = "Title,Year,Rating10,Rewatch,imdbID,WatchedDate\n"
@@ -33,18 +44,6 @@ def count_export_rows() -> int:
         return 0
     with export_path.open() as f:
         return max(len(f.readlines()) - 1, 0)
-
-
-def log_prompt(msg: str) -> None:
-    console.print(f"  {msg}", style="yellow")
-
-
-def log_ok(msg: str) -> None:
-    console.print(f"  {msg}", style="green")
-
-
-def log_err(msg: str) -> None:
-    console.print(f"  {msg}", style="red")
 
 
 def clear_export_csv() -> None:
@@ -164,53 +163,41 @@ def is_letterboxd_content_loaded(driver: webdriver.Chrome) -> bool:
         return False
 
 
-def has_cf_clearance(driver: webdriver.Chrome) -> bool:
-    try:
-        return any(c.get("name") == "cf_clearance" for c in driver.get_cookies())
-    except Exception:
-        return False
-
-
-def cloudflare_challenge_active(driver: webdriver.Chrome) -> bool:
-    if is_cloudflare_challenge_page(driver):
-        return True
-    if is_letterboxd_content_loaded(driver):
-        return False
-    return not has_cf_clearance(driver)
-
-
 def letterboxd_access_ready(driver: webdriver.Chrome) -> bool:
     return is_letterboxd_content_loaded(driver) and not cookie_consent_visible(driver)
+
+
+def force_cloudflare_refresh(driver: webdriver.Chrome) -> None:
+    """First Selenium navigation often soft-loads Letterboxd without Turnstile."""
+    log_nav("Refreshing to trigger Cloudflare challenge…")
+    ensure_letterboxd_window()
+    driver.refresh()
+    time.sleep(2)
 
 
 def wait_for_letterboxd_access(
     driver: webdriver.Chrome,
     *,
     timeout: int = 300,
-    phase: Literal["homepage", "sign_in"] = "homepage",
+    require_turnstile: bool = False,
 ) -> bool:
-    deadline = time.time() + timeout
-    last_turnstile_hint = 0.0
-    stable_since: float | None = None
-    turnstile_prompt_shown = False
+    """Wait until Letterboxd is usable.
 
-    if (
-        letterboxd_access_ready(driver)
-        and has_cf_clearance(driver)
-        and not is_cloudflare_challenge_page(driver)
-    ):
-        if phase == "homepage":
-            log_ok("Already completed Cloudflare challenge.")
-        return True
+    When require_turnstile=True (post-refresh homepage check): if a Cloudflare
+    challenge appears, wait for it; if the page loads with no challenge, treat
+    Cloudflare as already validated.
+    """
+    deadline = time.time() + timeout
+    turnstile_prompt_shown = False
+    challenge_seen = False
 
     while time.time() < deadline:
-        if cloudflare_challenge_active(driver):
-            stable_since = None
-            now = time.time()
+        challenge_now = is_cloudflare_challenge_page(driver)
+        if challenge_now:
+            challenge_seen = True
             if not turnstile_prompt_shown:
                 log_prompt("Please complete Cloudflare turnstile.")
                 turnstile_prompt_shown = True
-                last_turnstile_hint = now
             time.sleep(2)
             continue
 
@@ -221,21 +208,16 @@ def wait_for_letterboxd_access(
         if cookie_consent_visible(driver):
             if dismiss_cookie_consent(driver):
                 log_nav("Cookie banner dismissed.")
-            stable_since = None
             time.sleep(1)
             continue
 
         if not is_letterboxd_content_loaded(driver):
-            stable_since = None
             time.sleep(1)
             continue
 
         if letterboxd_access_ready(driver):
-            return True
-
-        if stable_since is None:
-            stable_since = time.time()
-        elif time.time() - stable_since >= 3:
+            if require_turnstile and not challenge_seen:
+                log_ok("Cloudflare validated.")
             return True
 
         time.sleep(1)
@@ -329,23 +311,74 @@ def is_letterboxd_logged_in(driver: webdriver.Chrome) -> bool:
 
 
 def get_browser_profile_dir() -> Path:
-    profile = Path("./chrome_profile")
-    legacy = Path("./csv/chrome_profile")
-    if not profile.exists() and legacy.exists():
-        shutil.move(legacy, profile)
-    profile.mkdir(parents=True, exist_ok=True)
-    return profile
-
+    return chrome_profile_dir()
 
 def prepare_homepage(driver: webdriver.Chrome, timeout: int = 300) -> bool:
     log_heading("Homepage")
     log_nav("Navigating to https://letterboxd.com/")
+    ensure_letterboxd_window()
     driver.get("https://letterboxd.com/")
-    time.sleep(1)
-    return wait_for_letterboxd_access(driver, timeout=timeout, phase="homepage")
+    time.sleep(0.5)
+    # Drop previous-run overlay lines stored in letterboxd.com localStorage.
+    reset_browser_logs()
+    log_info("Checking Cloudflare validation…")
+    time.sleep(1.0)
+    ensure_letterboxd_window()
+
+    # Never treat signed-in or cf_clearance as proof CF is valid — the cookie/session
+    # can be expired or rejected. Always attempt to surface a challenge via refresh.
+    force_cloudflare_refresh(driver)
+    return wait_for_letterboxd_access(
+        driver, timeout=timeout, require_turnstile=True
+    )
 
 
-def wait_for_sign_in(driver: webdriver.Chrome, config: Config, timeout: int = 300) -> bool:
+def find_sign_in_submit(driver: webdriver.Chrome):
+    selectors = (
+        "form.js-sign-in-form input[type='submit']",
+        "form.js-sign-in-form button[type='submit']",
+        "form.js-signin input[type='submit']",
+        "input.button[type='submit']",
+        "button.button[type='submit']",
+    )
+    for selector in selectors:
+        for el in driver.find_elements(By.CSS_SELECTOR, selector):
+            if el.is_displayed() and el.is_enabled():
+                return el
+    # Fallback: any visible submit inside a form on the sign-in page
+    for el in driver.find_elements(By.CSS_SELECTOR, "form input[type='submit'], form button[type='submit']"):
+        if el.is_displayed() and el.is_enabled():
+            return el
+    return None
+
+
+def click_sign_in_submit(driver: webdriver.Chrome) -> bool:
+    """Human-like move + click on Sign In (avoids JS click which Letterboxd flags)."""
+    button = find_sign_in_submit(driver)
+    if button is None:
+        log_err("Sign In button not found.")
+        return False
+    hide_ad_overlays(driver)
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
+    time.sleep(random.uniform(0.35, 0.9))
+    try:
+        ActionChains(driver).move_to_element(button).pause(random.uniform(0.2, 0.6)).click(button).perform()
+    except Exception:
+        try:
+            button.click()
+        except Exception as e:
+            log_err(f"Could not click Sign In: {e}")
+            return False
+    return True
+
+
+def wait_for_sign_in(
+    driver: webdriver.Chrome,
+    config: Config,
+    timeout: int = 300,
+    *,
+    auto_sign_in: bool = True,
+) -> bool:
     log_heading("Sign in")
 
     if is_letterboxd_logged_in(driver):
@@ -353,9 +386,10 @@ def wait_for_sign_in(driver: webdriver.Chrome, config: Config, timeout: int = 30
         return True
 
     log_nav("Navigating to https://letterboxd.com/sign-in/")
+    ensure_letterboxd_window()
     driver.get("https://letterboxd.com/sign-in/")
-    time.sleep(1)
-    if not wait_for_letterboxd_access(driver, timeout=timeout, phase="sign_in"):
+    time.sleep(2)
+    if not wait_for_letterboxd_access(driver, timeout=timeout):
         return False
 
     log_nav("Pre-filling credentials…")
@@ -373,7 +407,15 @@ def wait_for_sign_in(driver: webdriver.Chrome, config: Config, timeout: int = 30
         log_err("Could not find sign-in form.")
         return False
 
-    log_prompt("Click Sign In in the browser.")
+    if auto_sign_in:
+        time.sleep(random.uniform(0.4, 1.0))
+        log_nav("Clicking Sign In…")
+        if not click_sign_in_submit(driver):
+            log_prompt("Click Sign In in the browser.")
+        else:
+            log_nav("Sign In clicked — waiting for session…")
+    else:
+        log_prompt("Click Sign In in the browser.")
 
     deadline = time.time() + timeout
     prompted_403 = False
@@ -387,7 +429,7 @@ def wait_for_sign_in(driver: webdriver.Chrome, config: Config, timeout: int = 30
             return True
 
         if page_has_403_error(driver) and not prompted_403:
-            log_prompt("Sign-in failed — complete the captcha and click Sign In again.")
+            log_prompt("Sign-in blocked — complete any captcha, then click Sign In manually.")
             prompted_403 = True
 
         time.sleep(1)
@@ -435,6 +477,16 @@ def setup_driver() -> webdriver.Chrome:
 
     driver = webdriver.Chrome(service=service, options=options)
     driver.implicitly_wait(0)
+    # Reduce navigator.webdriver fingerprint (helps a bit with bot checks).
+    with contextlib.suppress(Exception):
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": """
+                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                """
+            },
+        )
     return driver
 
 
@@ -511,6 +563,7 @@ def upload_csv_to_letterboxd(
 
     try:
         log_nav("Navigating to https://letterboxd.com/import/")
+        ensure_letterboxd_window()
         driver.get("https://letterboxd.com/import/")
         time.sleep(3)
 
@@ -548,7 +601,7 @@ def upload_csv_to_letterboxd(
             log_ok(message)
             return True
         except TimeoutException:
-            console.print("  Import may not have completed — check Letterboxd.", style="yellow")
+            log_prompt("Import may not have completed — check Letterboxd.")
             return False
 
     except TimeoutException:
@@ -565,46 +618,51 @@ def upload_to_letterboxd(
     diary: bool = True,
     dry_run: bool = False,
     verbose: bool = False,
+    auto_sign_in: bool = True,
 ) -> bool:
     configure_logging(verbose=verbose)
     row_count = count_export_rows()
     if row_count == 0:
-        console.print("export.csv is empty — run `python ttl.py -t` first.", style="yellow")
+        log_prompt("export.csv is empty — run `ttl trakt` first.")
         return True
 
     title = "Letterboxd upload (dry run)" if dry_run else "Letterboxd upload"
-    console.print(title, style="bold magenta")
+    log_info(title)
     log_nav(f"{row_count} row(s) in export.csv")
 
     driver = None
     try:
         log_nav("Starting Chrome…")
         driver = setup_driver()
+        set_browser_notify_driver(driver)
 
         if not prepare_homepage(driver):
             return False
 
-        if not wait_for_sign_in(driver, config):
+        if not wait_for_sign_in(driver, config, auto_sign_in=auto_sign_in):
             return False
 
-        csv_path = get_csv_path("export.csv")
-        if not upload_csv_to_letterboxd(driver, csv_path, row_count, diary=diary, dry_run=dry_run):
+        export_file = get_csv_path("export.csv")
+        if not upload_csv_to_letterboxd(driver, export_file, row_count, diary=diary, dry_run=dry_run):
             return False
 
         if dry_run:
-            console.print(" Letterboxd dry run done. Closing browser…", style="bold green")
+            log_ok("Letterboxd dry run done. Closing browser…")
             return True
 
         clear_export_csv()
         log_ok("export.csv cleared.")
-        console.print("Letterboxd upload done.", style="bold green")
+        log_ok("Letterboxd upload done.")
         return True
 
     except KeyboardInterrupt:
+        # Detach browser logging first — Selenium may already be dead after Ctrl-C.
+        set_browser_notify_driver(None)
         console.print("  Interrupted.", style="yellow")
         return False
     except Exception as e:
         log_err(f"Letterboxd upload failed: {e}")
         return False
     finally:
+        set_browser_notify_driver(None)
         shutdown_driver(driver)
