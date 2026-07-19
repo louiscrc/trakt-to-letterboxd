@@ -7,6 +7,7 @@ from trakt.users import User
 
 from . import console
 from .log import log_nav
+from .paths import csv_path
 
 
 def convert_trakt_datetime_str(rated_at: str) -> datetime.datetime:
@@ -15,22 +16,18 @@ def convert_trakt_datetime_str(rated_at: str) -> datetime.datetime:
 
 
 def get_output_path(filename: str) -> Path:
-    """Get output path for CSV files"""
-    output_dir = Path("./csv")
-    output_dir.mkdir(exist_ok=True)
-    return output_dir / filename
+    """Get output path for CSV files in the app data directory."""
+    return csv_path(filename)
 
 
 def get_all_ratings() -> pd.DataFrame:
     """Fetch all ratings from Trakt."""
     trakt_user = User("me")
-    ratings = trakt_user.get_ratings('movies')
+    ratings = trakt_user.get_ratings("movies")
     ratings_data = []
-    
+
     for rating_data in ratings:
         movie_info = rating_data.get("movie", rating_data)
-        
-        # Parse rating date
         rated_at = rating_data.get("rated_at", "")
         rating_date = None
         if rated_at:
@@ -38,123 +35,114 @@ def get_all_ratings() -> pd.DataFrame:
                 rating_date = convert_trakt_datetime_str(rated_at).date()
             except Exception:
                 pass
-        
-        ratings_data.append({
-            'Title': movie_info.get("title", "Unknown Title"),
-            'Year': movie_info.get("year", 0),
-            'imdbID': movie_info.get("ids", {}).get("imdb", ""),
-            'Rating10': rating_data.get("rating", ""),
-            'RatingDate': rating_date
-        })
 
-    df = pd.DataFrame(ratings_data)
-    return df
+        ratings_data.append(
+            {
+                "Title": movie_info.get("title", "Unknown Title"),
+                "Year": movie_info.get("year", 0),
+                "imdbID": movie_info.get("ids", {}).get("imdb", ""),
+                "Rating10": rating_data.get("rating", ""),
+                "RatingDate": rating_date,
+            }
+        )
+
+    return pd.DataFrame(ratings_data)
 
 
 def get_all_watched() -> pd.DataFrame:
     """Fetch all watched movies from Trakt with watch history dates."""
     try:
-        # Direct call to Trakt API to fetch history with dates
-        # The /users/me/history/movies endpoint returns full history with watched_at
         api = core.api()
         history_data = []
         page = 1
         while True:
-            page_data = api.get(f'users/me/history/movies?page={page}&limit=100')
+            page_data = api.get(f"users/me/history/movies?page={page}&limit=100")
             if len(page_data) == 0:
                 break
             history_data.extend(page_data)
             page += 1
-        
+
         if not history_data:
-            return pd.DataFrame(columns=['Title', 'Year', 'imdbID', 'WatchedDate'])
+            return pd.DataFrame(columns=["Title", "Year", "imdbID", "WatchedDate"])
 
     except Exception as e:
         console.print(f"Failed to fetch watch history: {e}", style="red")
         raise
-    
-    # Convert to DataFrame with full history data
-    watched_data = [{
-        'Title': entry.get("movie", {}).get("title", "Unknown Title"),
-        'Year': entry.get("movie", {}).get("year", 0),
-        'imdbID': entry.get("movie", {}).get("ids", {}).get("imdb", ""),
-        'WatchedDate': convert_trakt_datetime_str(entry.get("watched_at", "")).date() if entry.get("watched_at", "") else None
-    } for entry in history_data]
-    
-    df = pd.DataFrame(watched_data)
-    return df
+
+    watched_data = [
+        {
+            "Title": entry.get("movie", {}).get("title", "Unknown Title"),
+            "Year": entry.get("movie", {}).get("year", 0),
+            "imdbID": entry.get("movie", {}).get("ids", {}).get("imdb", ""),
+            "WatchedDate": (
+                convert_trakt_datetime_str(entry.get("watched_at", "")).date()
+                if entry.get("watched_at", "")
+                else None
+            ),
+        }
+        for entry in history_data
+    ]
+    return pd.DataFrame(watched_data)
 
 
 def merge_ratings_and_watched(ratings_df: pd.DataFrame, watches_df: pd.DataFrame) -> pd.DataFrame:
     """Merge ratings and watched data by matching each watch with the closest rating."""
+    columns = ["Title", "Year", "Rating10", "Rewatch", "imdbID", "WatchedDate"]
+    if watches_df.empty:
+        return pd.DataFrame(columns=columns)
+
     merged_rows = []
-    
-    # Group watches and ratings by imdbID
-    watches_by_movie = watches_df.groupby('imdbID')
-    ratings_by_movie = ratings_df.groupby('imdbID')
-    
-    # Process each movie
+    watches_by_movie = watches_df.groupby("imdbID")
+    ratings_by_movie = ratings_df.groupby("imdbID") if not ratings_df.empty else None
+
     for imdb_id, watch_group in watches_by_movie:
-        # Sort watches by date
-        watches = watch_group.sort_values('WatchedDate').reset_index(drop=True)
-        
-        # Get ratings for this movie if they exist
-        if imdb_id in ratings_by_movie.groups:
-            ratings = ratings_by_movie.get_group(imdb_id).sort_values('RatingDate').reset_index(drop=True)
-            # List of available ratings (index)
+        watches = watch_group.sort_values("WatchedDate").reset_index(drop=True)
+
+        if ratings_by_movie is not None and imdb_id in ratings_by_movie.groups:
+            ratings = ratings_by_movie.get_group(imdb_id).sort_values("RatingDate").reset_index(drop=True)
             available_ratings = list(ratings.index)
         else:
             ratings = pd.DataFrame()
             available_ratings = []
-        
-        # For each watch, find the closest rating
+
         for _, watch in watches.iterrows():
-            watch_date = watch['WatchedDate']
-            rating_value = ''
-            
-            # If we have available ratings and a valid watch date
+            watch_date = watch["WatchedDate"]
+            rating_value = ""
+
             if available_ratings and pd.notna(watch_date):
-                # Find the closest rating by date
                 best_rating_idx = None
                 min_diff = None
-                
+
                 for rating_idx in available_ratings:
-                    rating_date = ratings.loc[rating_idx, 'RatingDate']
-                    
-                    # If the rating has a valid date
+                    rating_date = ratings.loc[rating_idx, "RatingDate"]
                     if pd.notna(rating_date):
                         diff = abs((watch_date - rating_date).days)
                         if min_diff is None or diff < min_diff:
                             min_diff = diff
                             best_rating_idx = rating_idx
-                
-                # If we found a rating, use it and remove it from the list
+
                 if best_rating_idx is not None:
-                    rating_value = ratings.loc[best_rating_idx, 'Rating10']
+                    rating_value = ratings.loc[best_rating_idx, "Rating10"]
                     available_ratings.remove(best_rating_idx)
-            
-            # Add the row to results
-            merged_rows.append({
-                'Title': watch['Title'],
-                'Year': watch['Year'],
-                'imdbID': imdb_id,
-                'WatchedDate': watch_date,
-                'Rating10': rating_value
-            })
-    
-    # Create final DataFrame
+
+            merged_rows.append(
+                {
+                    "Title": watch["Title"],
+                    "Year": watch["Year"],
+                    "imdbID": imdb_id,
+                    "WatchedDate": watch_date,
+                    "Rating10": rating_value,
+                }
+            )
+
+    if not merged_rows:
+        return pd.DataFrame(columns=columns)
+
     merged_df = pd.DataFrame(merged_rows)
-    
-    # Add Rewatch column based on imdbID duplicates
-    merged_df = merged_df.sort_values(['imdbID', 'WatchedDate'])
-    merged_df['Rewatch'] = merged_df.groupby('imdbID').cumcount() > 0
-    
-    # Reorder columns in desired order
-    final_df = merged_df[['Title', 'Year', 'Rating10', 'Rewatch', 'imdbID', 'WatchedDate']].copy()
-    
-    # Sort by watch date (most recent first)
-    final_df = final_df.sort_values('WatchedDate', ascending=False, na_position='last')
-    return final_df
+    merged_df = merged_df.sort_values(["imdbID", "WatchedDate"])
+    merged_df["Rewatch"] = merged_df.groupby("imdbID").cumcount() > 0
+    final_df = merged_df[columns].copy()
+    return final_df.sort_values("WatchedDate", ascending=False, na_position="last")
 
 
 def _entry_key(df: pd.DataFrame) -> pd.Series:
@@ -171,29 +159,28 @@ def compare_and_get_new_entries(new_merged_df: pd.DataFrame) -> pd.DataFrame:
     """Return entries in new_merged_df that are not in the previous merged.csv."""
     old_merged_path = get_output_path("merged.csv")
 
+    if new_merged_df.empty:
+        return new_merged_df
+
     if not old_merged_path.exists():
         return new_merged_df
-    
-    try:
-        old_merged_df = pd.read_csv(old_merged_path, dtype={'Rating10': str})
-        
-        # Remove _key column if it exists from previous run
-        if '_key' in old_merged_df.columns:
-            old_merged_df = old_merged_df.drop('_key', axis=1)
-        
-        # Create unique key for each entry (imdbID + WatchedDate + Rating10)
-        new_merged_df["_key"] = _entry_key(new_merged_df)
 
+    try:
+        old_merged_df = pd.read_csv(old_merged_path, dtype={"Rating10": str})
+        if "_key" in old_merged_df.columns:
+            old_merged_df = old_merged_df.drop("_key", axis=1)
+
+        new_merged_df = new_merged_df.copy()
+        new_merged_df["_key"] = _entry_key(new_merged_df)
         old_merged_df["_key"] = _entry_key(old_merged_df)
-        
-        # Find new entries
-        new_keys = set(new_merged_df['_key']) - set(old_merged_df['_key'])
-        new_entries_df = new_merged_df[new_merged_df['_key'].isin(new_keys)].copy()
-        return new_entries_df.drop('_key', axis=1)
+
+        new_keys = set(new_merged_df["_key"]) - set(old_merged_df["_key"])
+        new_entries_df = new_merged_df[new_merged_df["_key"].isin(new_keys)].copy()
+        return new_entries_df.drop("_key", axis=1)
 
     except Exception as e:
         console.print(f"Could not read merged.csv: {e}", style="yellow")
-        return new_merged_df.drop('_key', axis=1) if '_key' in new_merged_df.columns else new_merged_df
+        return new_merged_df.drop("_key", axis=1) if "_key" in new_merged_df.columns else new_merged_df
 
 
 def append_to_export_csv(new_entries_df: pd.DataFrame, *, dry_run: bool = False) -> tuple[pd.DataFrame, int]:

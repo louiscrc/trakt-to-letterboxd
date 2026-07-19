@@ -3,9 +3,10 @@ config.yml
 .venv/
 __pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
 
-# Generated CSV data
+# Accidental cwd leftovers (real data lives under the OS app data dir)
 csv/
-
-# Selenium Chrome session (Letterboxd login)
 chrome_profile/

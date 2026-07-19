@@ -1,8 +1,0 @@
-# This file was manually generated.
-pandas
-pytrakt
-rich
-pyyaml
-pydantic
-selenium
-webdriver-manager
