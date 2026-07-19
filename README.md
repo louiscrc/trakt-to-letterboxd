@@ -1,63 +1,116 @@
-# Letterboxd Trakt Sync
+# trakt-to-letterboxd
 
-Export your Trakt movies to CSV and import them to Letterboxd.
+Sync Trakt movie watches to Letterboxd via the `ttl` CLI.
 
 - Pull new watches from Trakt into `export.csv` (accumulates)
 - Upload `export.csv` to Letterboxd, then clear it on success
-- Manual Cloudflare Turnstile in Chrome for Letterboxd login
+- Manual Cloudflare Turnstile in Chrome when Letterboxd requires it
+
+## Install
+
+Requires [pipx](https://pipx.pypa.io/) and Google Chrome.
+
+```bash
+pipx install trakt-to-letterboxd
+```
+
+From GitHub (latest main, or before a PyPI release exists):
+
+```bash
+pipx install git+https://github.com/louiscrc/trakt-to-letterboxd.git
+```
+
+This installs the `ttl` command globally. Check with `ttl --help`.
 
 ## Setup
 
 ```bash
-cp config.template.yml config.yml
-# Fill in letterboxd_username, letterboxd_password, trakt_client_id, trakt_client_secret
+ttl init
+# Prompts for Letterboxd username/password and Trakt client ID/secret
+```
 
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-mkdir -p csv
+Non-interactive (writes a template to edit by hand):
+
+```bash
+ttl init --non-interactive
 ```
 
 Get Trakt API credentials at https://trakt.tv/oauth/applications/new (redirect URI: `urn:ietf:wg:oauth:2.0:oob`).
 
 On first Trakt sync you'll authenticate via device code.
 
+`config.yml` stores your Letterboxd password in plaintext. Keep the data directory private and never commit that file.
+
 ## Usage
 
 ```bash
-python ttl.py ...
--t, --trakt               # pull new watches from Trakt into csv/export.csv (accumulates)
--l, --letterboxd          # upload csv/export.csv to Letterboxd, then clear it
---no-diary                # skip diary entries on Letterboxd import (only with -l/--letterboxd)
---dry-run                 # Trakt: fetch only, no CSV writes. Letterboxd: stop before Import Films (Ctrl-C to exit)
--v, --verbose             # show detailed progress logs
+ttl --version
+ttl init                      # interactive config setup
+ttl init --non-interactive    # write template config only
+ttl trakt                     # pull new watches from Trakt into export.csv
+ttl letterboxd                # upload export.csv to Letterboxd, then clear it
+ttl sync                      # trakt then letterboxd (stops if trakt fails)
+ttl letterboxd --no-diary     # skip diary entries on Letterboxd import
+ttl letterboxd --manual-sign-in  # fill credentials but do not auto-click Sign In
+ttl trakt --dry-run           # Trakt: fetch only, no CSV writes
+ttl letterboxd --dry-run      # Letterboxd: stop before Import Films (Ctrl-C to exit)
+ttl trakt -v                  # verbose progress logs
+ttl trakt --config /path.yml  # custom config path
 ```
 
 ### Letterboxd upload flow
 
-`python ttl.py -l` opens Chrome and:
+`ttl letterboxd` opens Chrome and:
 
-1. Navigates to **letterboxd.com** — if displayed, *you need to complete Cloudflare Turnstile in the browser*
-2. If not logged-in, opens **sign-in** with credentials pre-filled, *you need to click Sign-In in the browser*
-3. Uploads `csv/export.csv`, clicks **Import Films**, waits for **Saved N films.**
+1. Navigates to **letterboxd.com** — complete Turnstile if Cloudflare shows it
+2. If not logged in, opens **sign-in**, pre-fills credentials, and tries to click **Sign In** automatically. Use `--manual-sign-in` to click yourself when the automatic click fails (Cloudflare sometimes treats it as a bot).
+3. Uploads `export.csv`, clicks **Import Films**, waits for **Saved N films.**
 
-Requires Google Chrome installed locally.
+## Data directory
 
-## Generated files
+`ttl` stores all user data in a fixed app folder (created automatically). It does **not** use your current working directory.
 
-| File | Description |
+| Platform | Directory |
+|----------|-----------|
+| macOS | `~/Library/Application Support/trakt-to-letterboxd/` |
+| Linux | `~/.local/share/trakt-to-letterboxd/` (or `$XDG_DATA_HOME/trakt-to-letterboxd/`) |
+| Windows | `%LOCALAPPDATA%\trakt-to-letterboxd\` |
+
+Layout:
+
+| Path | Description |
 |------|-------------|
-| `csv/export.csv` | Pending queue for Letterboxd (grows with `-t`, cleared after successful `-l`) |
-| `csv/merged.csv` | Full merged history |
+| `config.yml` | Credentials and Trakt OAuth state |
+| `csv/export.csv` | Pending queue for Letterboxd (grows with `ttl trakt`, cleared after successful `ttl letterboxd`) |
+| `csv/merged.csv` | Full Trakt merged history (ratings + watch history) |
 | `csv/ratings.csv` | Trakt ratings |
 | `csv/watched.csv` | Trakt watch history |
+| `chrome_profile/` | Persistent Chrome session (Letterboxd login) |
 
-Format: `Title,Year,Rating10,Rewatch,imdbID,WatchedDate`
+CSV format: `Title,Year,Rating10,Rewatch,imdbID,WatchedDate`
 
-## Comment about full-auto mode
+`ttl init` prints the resolved paths. Override only the config file with `--config /path/to/config.yml` if needed; CSVs and the Chrome profile always stay under the data directory above.
 
-Fully automated mode isn't possible, despite using the exact same chrome_profile, starting the browser headless mode systematically re-triggers the Cloudflare challenge.
-But in headfull mode, you only need to complete the Cloudflare challenge and manual "log-in" click once on a while, the rest of the time the process is 100% automated even if the browser is opened.
+### Automation limits
+
+Fully unattended / headless mode is not reliable: starting Chrome headless systematically re-triggers Cloudflare. In normal (headed) mode you usually only need to complete Turnstile (and occasionally Sign In) once in a while; a warm `chrome_profile` keeps most runs automated.
+
+### Development
+
+Install from source:
+
+```bash
+git clone https://github.com/louiscrc/trakt-to-letterboxd.git
+cd trakt-to-letterboxd
+pipx install -e .
+```
+
+Optional environment overrides for Chrome (advanced):
+
+| Variable | Purpose |
+|----------|---------|
+| `CHROME_BIN` | Path to the Chrome/Chromium binary |
+| `CHROMEDRIVER_PATH` | Path to a local chromedriver (skips webdriver-manager) |
 
 ## License
 
