@@ -1,3 +1,5 @@
+Trakt made their API paywalled, so this project is no longer maintained. It should work if you have a Trakt VIP account.
+
 # trakt-to-letterboxd
 
 Sync Trakt movie watches to Letterboxd via the `ttl` CLI.
